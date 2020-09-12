@@ -3,7 +3,8 @@ import torch.nn as nn
 from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
-
+import copy
+import torch.nn.functional as F
 
 ###############################################################################
 # Helper Functions
@@ -644,8 +645,9 @@ class UnetGenerator_AddLayer(nn.Module):
         unet_block = UnetSkipConnectionBlock_AddLayer(ngf, ngf * 2, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
         self.model = UnetSkipConnectionBlock_AddLayer(output_nc, ngf, input_nc=input_nc, submodule=unet_block, outermost=True, norm_layer=norm_layer)  # add the outermost layer
 
-    def forward(self, input):
+    def forward(self, input, condition):
         """Standard forward"""
+        self.model.model[1].model[2].item = condition
         return self.model(input)
 
 
@@ -656,7 +658,8 @@ class UnetSkipConnectionBlock_AddLayer(nn.Module):
     """
 
     def __init__(self, outer_nc, inner_nc, input_nc=None,
-                 submodule=None, outermost=False, innermost=False, norm_layer=nn.BatchNorm2d, use_dropout=False):
+                 submodule=None, outermost=False, innermost=False, norm_layer=nn.BatchNorm2d, use_dropout=False,
+                 condition=None):
         """Construct a Unet submodule with skip connections.
 
         Parameters:
@@ -677,12 +680,37 @@ class UnetSkipConnectionBlock_AddLayer(nn.Module):
             use_bias = norm_layer == nn.InstanceNorm2d
         if input_nc is None:
             input_nc = outer_nc
-        downconv = nn.Conv2d(input_nc, inner_nc, kernel_size=4,
-                             stride=2, padding=1, bias=use_bias)
-        downrelu = nn.LeakyReLU(0.2, True)
-        downnorm = norm_layer(inner_nc)
-        uprelu = nn.ReLU(True)
-        upnorm = norm_layer(outer_nc)
+        if input_nc == 128:
+            downconv = nn.Conv2d(input_nc+3, inner_nc, kernel_size=4,
+                                stride=2, padding=1, bias=use_bias)
+            # downconv_1 = nn.Conv2d(input_nc, input_nc+3, kernel_size=1,
+            #                     stride=1, padding=0, bias=use_bias)
+            # addition
+            # downconv_2 = nn.Conv2d(input_nc, inner_nc, kernel_size=4,
+            #                     stride=2, padding=1, bias=use_bias)
+            downrelu = nn.LeakyReLU(0.2, True)
+            downnorm = norm_layer(inner_nc)
+            uprelu = nn.ReLU(True)
+            upnorm = norm_layer(outer_nc+3)
+        elif input_nc == 64:
+            downconv = nn.Conv2d(input_nc, inner_nc, kernel_size=4,
+                                stride=2, padding=1, bias=use_bias)
+            # downconv_1 = nn.Conv2d(input_nc, input_nc+3, kernel_size=1,
+            #                     stride=1, padding=0, bias=use_bias)
+            # addition
+            # downconv_2 = nn.Conv2d(input_nc, inner_nc, kernel_size=4,
+            #                     stride=2, padding=1, bias=use_bias)
+            downrelu = nn.LeakyReLU(0.2, True)
+            downnorm = norm_layer(inner_nc+3)
+            uprelu = nn.ReLU(True)
+            upnorm = norm_layer(outer_nc)
+        else:
+            downconv = nn.Conv2d(input_nc, inner_nc, kernel_size=4,
+                                stride=2, padding=1, bias=use_bias)
+            downrelu = nn.LeakyReLU(0.2, True)
+            downnorm = norm_layer(inner_nc)
+            uprelu = nn.ReLU(True)
+            upnorm = norm_layer(outer_nc)
 
         if outermost:
             upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
@@ -699,16 +727,39 @@ class UnetSkipConnectionBlock_AddLayer(nn.Module):
             up = [uprelu, upconv, upnorm]
             model = down + up
         else:
-            upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
+            if input_nc == 128:
+                upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc+3,
                                         kernel_size=4, stride=2,
                                         padding=1, bias=use_bias)
-            down = [downrelu, downconv, downnorm]
-            up = [uprelu, upconv, upnorm]
+                down = [downrelu, downconv, downnorm]
+                up = [uprelu, upconv, upnorm]
 
-            if use_dropout:
-                model = down + [submodule] + up + [nn.Dropout(0.5)]
+                if use_dropout:
+                    model = down + [submodule] + up + [nn.Dropout(0.5)]
+                else:
+                    model = down + [submodule] + up
+            elif input_nc == 64:
+                upconv = nn.ConvTranspose2d(inner_nc * 2+6, outer_nc,
+                                        kernel_size=4, stride=2,
+                                        padding=1, bias=use_bias)
+                down = [downrelu, downconv, Cat_xr(condition), downnorm]
+                up = [uprelu, upconv, upnorm]
+
+                if use_dropout:
+                    model = down + [submodule] + up + [nn.Dropout(0.5)]
+                else:
+                    model = down + [submodule] + up
             else:
-                model = down + [submodule] + up
+                upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
+                                            kernel_size=4, stride=2,
+                                            padding=1, bias=use_bias)
+                down = [downrelu, downconv, downnorm]
+                up = [uprelu, upconv, upnorm]
+
+                if use_dropout:
+                    model = down + [submodule] + up + [nn.Dropout(0.5)]
+                else:
+                    model = down + [submodule] + up
 
         self.model = nn.Sequential(*model)
 
@@ -717,3 +768,17 @@ class UnetSkipConnectionBlock_AddLayer(nn.Module):
             return self.model(x)
         else:   # add skip connections
             return torch.cat([x, self.model(x)], 1)
+
+class Cat_xr(nn.Module):
+    def __init__(self, item):
+        super().__init__()
+        self.item = item
+
+    def forward(self, input):
+        '''
+        Add an item in-place.
+        '''
+        # batch_size = input.size(0)
+        # shape = (batch_size, *self.shape)
+        out = torch.cat((input, F.interpolate(self.item, input.shape[-2:])),1)
+        return out

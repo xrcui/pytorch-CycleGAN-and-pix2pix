@@ -1,6 +1,7 @@
 import torch
 from .base_model import BaseModel
 from . import networks
+import copy
 
 
 class Pix2PixModel(BaseModel):
@@ -85,7 +86,10 @@ class Pix2PixModel(BaseModel):
 
     def forward(self):
         """Run forward pass; called by both functions <optimize_parameters> and <test>."""
-        self.fake_B = self.netG(self.real_A)  # G(A)
+        if self.netG.module.__class__.__name__ == 'UnetGenerator':
+            self.fake_B = self.netG(self.real_A)
+        elif self.netG.module.__class__.__name__ == 'UnetGenerator_AddLayer':
+            self.fake_B = self.netG(self.real_A,self.real_input)  # G(A)
 
     def backward_D(self):
         """Calculate GAN loss for the discriminator"""
@@ -114,6 +118,7 @@ class Pix2PixModel(BaseModel):
         self.loss_G.backward()
 
     def optimize_parameters(self):
+        self.real_input = copy.deepcopy(self.real_A)
         self.forward()                   # compute fake images: G(A)
         # update D
         self.set_requires_grad(self.netD, True)  # enable backprop for D

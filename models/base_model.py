@@ -3,6 +3,7 @@ import torch
 from collections import OrderedDict
 from abc import ABC, abstractmethod
 from . import networks
+import copy
 
 
 class BaseModel(ABC):
@@ -101,6 +102,7 @@ class BaseModel(ABC):
         This function wraps <forward> function in no_grad() so we don't save intermediate steps for backprop
         It also calls <compute_visuals> to produce additional visualization results
         """
+        self.real_input = copy.deepcopy(self.real_A)
         with torch.no_grad():
             self.forward()
             self.compute_visuals()
